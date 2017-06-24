@@ -1,0 +1,267 @@
+---
+title: "Session 2"
+author: "Ana Paula Sales"
+date: "June 22, 2017"
+output: html_document
+---
+
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+
+```{r load libraries and codes}
+library(data.table)
+library(ggplot2)
+library(mvtnorm)
+source("~/Documents/projects/teaching/BayesComputation/code/AR1-functions.R")
+```
+
+## Outline
+
+### Part 2: Introduction to stochastic simulation via AR(1) models
+
+- AR(1) model properties
+- Sampling from AR(1) via compositional form of the joint distribution
+- Reference Bayesian analysis
+    - Approximate posterior simulation
+    - Forecasting: predictive simulation
+- Reference Bayesian analysis via importance sampling
+- Latent AR(1): a first HMM
+
+### Given time:
+
+- Accept-reject sampling
+- Gibbs sampling
+- Metropolis-Hastings
+
+## Wrapping up from last time
+#### An important detour: p-values and frequentist hypothesis testing
+What evidence against the null hypothesis does a p-value of 0.05 provide?  
+In other words, p(H =0 | p-value = 0.05) = ?
+Address this question via simulation, as follows:
+
+- H ~ Bern(pi)
+- If H ==0, then sample y.bar ~ N(0, 1/n)
+- Else if H ==1, then sample mu ~ N(0,1), and y.bar ~ N(mu, 1/n)
+- Compute p-value, aka, 1 - 2*pnorm(z, mu, 1)
+- Repeat the above steps many times
+- Now compute p(H ==0| p-value )
+
+```{r frequentist hypothesis testing}
+pval.simulation = function(n, pi, mu0, sigma2, num.trials){
+  H = rbinom(num.trials, 1, pi)
+  mu = rnorm(length(H), mean = mu0, sd = H*sigma2)
+  pvalue = 2 *(1 - pnorm(abs(( rnorm(length(H), mean = mu, sd = 1/sqrt(n)) - mu)/(1/sqrt(n)))))
+  prob.H0.given.pvalue =  sum(pvalue[H == 0] >= 0.049 & pvalue[H == 0] <= 0.05)/sum(pvalue >= 0.049 & pvalue <= 0.05)
+  prob.H0.given.pvalue
+  }
+
+n = 30
+pi = 0.5
+num.trials = 100000
+mu0 = 0
+
+
+sigma2 = c(1,2,5,10,15,20,25,50,100)
+pi = seq(0,1,by=.1)
+probH0 = sapply(pi, function(x){sapply(sigma2, pval.simulation, n = n, mu0 = mu0, num.trials = num.trials, pi = x)})
+probH0 = cbind(probH0, sigma2)
+
+plot(NA, xlim = range(pi), ylim = range(probH0[,-ncol(probH0)]), xlab = expression(pi), ylab = expression(paste("P(", H[0], "|pval = 0.05)")))
+apply(probH0, 1, function(y){lines(y = y[1:(length(y)-1)],x = pi,col=y[length(y)],type="b")})
+legend("topright", legend=sigma2, col = 1:length(sigma2),lty=1,title = expression(sigma^2))
+
+##LAB EXERCISE:
+# Explore effect relationship between p-value and p(H0|Data) for various values of pi, num.trials, n
+```
+
+
+
+
+## Part 2: Introduction to stochastic simulation via AR(1) models
+
+### Compositional sampling of the joint distribution of AR(1) series
+
+```{r AR compositional}
+
+# Sample from AR(1)
+s = 1
+phi=.8
+v = s2v(s=1,phi=phi)
+x = AR.sample.compositional(nsamples=1, ntimepoints=1000, phi=phi,v=v)
+AR.plot.samples(x)
+
+# Normality of joint x_{1:ntimepoints}
+qqnorm(x)
+qqline(x,lty=2, col="red")
+hist(x,freq=FALSE)
+xs = sort(x)
+y= dnorm(xs, mean=0, sqrt(s))
+lines(xs,y)
+
+# Explore stationarity: look at different segments of the time series
+x.sub = rbind(x[1:250], x[751:1000])
+AR.plot.samples(x.sub)
+qqplot(x.sub[1,],x.sub[2,])
+abline(0,1)
+qqnorm(x.sub[1,])
+qqline(x.sub[1,],lty=2, col="red")
+qqnorm(x.sub[2,])
+qqline(x.sub[2,],lty=2, col="red")
+
+# Recover phi -- linear regression
+lm1 = lm(x[2:length(x)] ~ x[1:(length(x)-1)])
+lm1$coefficients
+plot(x[2:length(x)] ~ x[1:(length(x)-1)])
+abline(lm1$coefficients)
+
+# LAB EXERCISE 
+# 1) Write your own or inspect AR.sample.compositional
+# 2) Simulate AR(1) with s = 1 series of length 100.  
+#     - Conditioned on different start values (eg, x0 = 0 or 10). What's the impact of initial x0?
+#     - Different values of phi (positive, negative, large, small, abs value larger or smaller than one)
+# 3) Sample 100 obs from the joint Normal implied by the AR(1).  How does it compare to #1?
+
+nsamples = 3
+ntimes = 100
+phi = 0.2
+v = 1
+
+#sample from compositional form of joint
+x = AR.sample.compositional(nsamples, ntimes, phi,v)
+AR.plot.samples(x)
+
+#sample from MVN joint
+x = AR.sample.mvn(nsamples, ntimes, phi,v)
+AR.plot.samples(x)
+
+
+```
+
+
+```{r AR compositional SOI data}
+#SOI data
+y = fread("~/Documents/projects/teaching/BayesComputation/data/soi.txt")
+x = y$V1  - mean(y$V1)
+plot(x,type="l")
+
+#Fit an AR(1): x_t = phi * x_{t-1} + epsilon
+
+##figure out phi
+lm1 = lm(x[2:length(x)] ~ x[1:(length(x)-1)])
+phi = round(lm1$coefficients[2],d=3)
+phi
+
+##figure out epsilon, e ~ N(0, v)
+e = x[2:length(x)] - phi*x[1:(length(x)-1)]
+plot(e,type="l")
+qqnorm(e)
+qqline(e,col=2,lty=2)
+v = round(var(e),d=2)
+s = round(v2s(v=v,phi=phi),d=2)
+cat(v,s)
+
+##simulate AR(1) 
+n = length(x)
+z = AR.sample.compositional(phi = phi, nsamples = 1, ntimepoints=n,v = v,verbose=TRUE)
+
+# Similar to original data?
+par(mfrow=c(1,1))
+for(i in 1:5){
+  ix = sample(10:(n - 20),1)
+  y = c(x[1:ix], z[1:(n-ix)])
+  plot(y, ylim = range(c(x,z)),type="l")
+  readline()
+  abline(v=ix,col=2)
+  readline()
+}
+```
+
+### Approximate Bayesian reference inference for AR(1) model
+
+```{r AR1 reference posterior inference}
+#posterior parameters
+post.pars = AR.ref.posterior.inf(x)
+
+#get posterior samples of phi and v, and posterior predictive of x
+post.samples=AR.ref.posterior.and.predictive(x = x[length(x)], B = post.pars$B, b = post.pars$b, nu = post.pars$nu, Qb = post.pars$Qb, nsamples = 3000, forecast.length=100)
+
+#Inspect posterior samples of v
+hist(post.samples$vsamp,xlab ="v|x",main='')
+
+#Inspect posterior samples of v
+hist(post.samples$phisamp,xlab =expression(paste(phi,"|v,x")),main='')
+
+# LAB EXERCISE 
+# 1) Write your own or inspect AR.ref.posterior.inf
+# 2) Explore model
+
+```
+
+### Forecasting
+
+```{r AR1 forecasting}
+#plot some of the predicted trajectories
+n = length(x)
+nn = nrow(post.samples$xsamp)
+for(i in 1:2){
+  rand.ix = sample(ncol(post.samples$xsamp),1)
+  plot(1:n, x ,xlim = c(1, n+nn),ylim= range(post.samples$xsamp),type="l",xlab = "index")
+  lines((n+1):(n+nn), post.samples$xsamp[,rand.ix],col="red")
+  readline()
+  }
+
+# LAB EXERCISE 
+# 1) What do we predict x will look like 2 months from now (assume now = end of available data)?
+# 2) What do we predict x will look like for the next n months?
+# 3) Suppose we were at the month with highest value of SOI, how would the prediction change?
+
+```
+
+
+### Bayesian reference inference of AR(1) process via importance sampling
+
+
+```{r importance sampling}
+#1) Define target distribution: 
+#   full posterior obtained via reference prior
+
+
+#2) Define importance sampling distribution
+#   normal-inverse chi2 obtained via approximate reference Bayesian inference above
+post.pars = AR.ref.posterior.inf(x)
+
+#3) sample from importance sampling distribution
+imp.samples=AR.ref.posterior.and.predictive(x = x[length(x)], B = post.pars$B, b = post.pars$b, nu = post.pars$nu, Qb = post.pars$Qb, nsamples = 2500, forecast.length=100)
+
+#4) Compute weights (unnormalized)
+# Usually we evaluate under target, and under importance distns, get their ratio
+# but here we can just compute the weight directly
+logw = function(phi, v, x1){
+  return(-log(v)/2 + log(1-phi^2)/2 - x1^2*(1-phi^2)/(2*v))
+}
+
+lw = mapply(logw,imp.samples$phisamp, imp.samples$vsamp, x[1])
+# exponentiate.  Use the recipe in link below for numerical stability
+# http://timvieira.github.io/blog/post/2014/02/11/exp-normalize-trick/
+w = exp(lw - max(lw))
+w = w/sum(w)
+
+#5) Posterior mean for phi and v
+# Remember that we only have unnormalized t(theta) and g(theta)
+# Use asymptotic result from Geweke (1989) Econometrica
+w %*% imp.samples$phisamp
+w %*% imp.samples$vsamp
+w %*% sqrt(imp.samples$vsamp)
+
+phi.supp = seq(min(imp.samples$phisamp), max(imp.samples$phisamp),length=1000)
+phi.dens = dnorm(phi.supp, post.pars$b, sqrt(mean(imp.samples$vsamp)/post.pars$B))
+hist(imp.samples$phisamp,freq=FALSE,main='', xlab=expression(phi %~% g(theta)))
+lines(phi.supp, phi.dens)
+
+
+cat(post.pars$b,mean(imp.samples$phisamp),w %*% imp.samples$phisamp )
+```
+
+

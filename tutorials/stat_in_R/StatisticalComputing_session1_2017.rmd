@@ -1,0 +1,380 @@
+---
+title: "Session 1"
+author: "Ana Paula Sales"
+date: "June 15, 2017"
+output: html_document
+---
+
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+
+```{r load libraries and codes}
+library(data.table)
+library(ggplot2)
+library(mvtnorm)
+source("~/Documents/projects/teaching/BayesComputation/code/priorEffect-functions.R")
+source("~/Documents/projects/teaching/BayesComputation/code/AR1-functions.R")
+```
+
+## Outline
+
+### Session 1: Bayesian computation basics
+
+- Common distributions in R
+- Choosing priors
+- Effect of prior distribution on posterior
+- Summarizing the posterior distribution analytically vs via simulation
+- Bayesian hypothesis testing vs frequentist hypothesis testing
+
+### Session 2: Introduction to stochastic simulation via AR(1) models and compositional sampling
+
+- AR(1) model properties
+- Sampling from AR(1) via compositional form of the joint distribution
+- Reference Bayesian analysis
+    - Posterior simulation
+    - Forecasting: predictive simulation
+- Latent AR(1): a first HMM
+
+### More to come:
+
+- Accept-reject sampling
+- Importance sampling
+- Gibbs sampling
+- Metropolis-Hastings
+
+
+## Session 1
+### Sampling from and evaluating common distributions
+
+- runif
+- set.seed
+- Exponential distribution
+    - rXXX(): generates samples from the distribution
+    - dXXX(): probability density function
+    - pXXX(): cumulative distribution function
+    - qXXX(): quantiles
+    
+
+
+
+```{r sampling and evaluating common distributions: dnorm example}
+x = seq(-4, 4, by = 0.1);
+mu = 0
+sd = 1
+
+
+distnExpr = function(pars, distSymbol){
+   a=paste0("x ~ ", distSymbol, "(", paste(pars,collapse=","), ")")
+  return(a)
+}
+
+#normal density
+y = dnorm(x, mu, sd);
+plot(x, y, type = 'l', col = 'blue', lwd = 2, ylab = "f(x)", main = distnExpr(c(mu,sd),"N"))
+
+#cumulative distribution
+y = pnorm(x,mu,sd);
+plot(x, y, type = 'l', col = 'blue', lwd = 2, ylab = "F(x)",main = distnExpr(c(mu,sd),"N"))
+
+#quantiles
+p = seq(0.001, 0.999, by =0.001)
+x = qnorm(p)
+plot( x,p,type = 'l', lwd = 2, col = 'blue', ylab = "F(x)", main = distnExpr(c(mu,sd),"N"))
+
+#looking at samples with histograms
+x = rnorm(300)
+hist(x, main = distnExpr(c(mu,sd),"N"))
+
+#histogram bin size
+b = seq(-4, 4, by = 0.2) # More narrow bins
+hist(x, breaks = b, col = 'gray', border = 'white',freq=FALSE, main = distnExpr(c(mu,sd),"N"))
+
+#adding theoretical density
+lines(b, dnorm(b,mu,sd))
+
+#LAB
+#explore dbeta and dbinom on your own
+```
+
+
+
+### Choosing a prior
+Prior elicitation: Beta example
+```{r prior elicitation Beta example}
+
+# Say theta ~ .2
+# P(theta > .8) is small .001 => P(theta < .8) ~ .999
+
+#Mode of Be(a,b) = (a-1)/(a+b-2) = .2 => a = .25*b + .75
+#Now we know theta ~ Be(b-3,b)
+#P(theta > .8) ~ .001 => pbeta(.8, a,b) = 1 - .001.  Solve for b.
+
+aGivenBAndM = function(b, m){
+  return((m*(b-2) + 1)/(1-m))
+}
+findBetaB = function(b,
+             m, # value of mode of beta
+             q, # quantile
+             p  # cummulative prob at quantile "q"
+             ){
+  res = pbeta(q,aGivenBAndM(b,m),b) - p
+  return(res)
+}
+
+sol = uniroot(findBetaB, interval=c(1,100),m=.2, q=.8, p = 0.999)
+sol
+b = round(sol$root,d=2)
+a = round(aGivenBAndM(b,0.2),d=2)
+
+x = seq(0,1,by=.001)
+y =dbeta(x,a,b)
+plot(x,y,type="l",ylab="f(x)", main = distnExpr(c(a,b),"B"))
+```
+
+```{r prior elicitation Normal example}
+w = c(50.5, 53.5, 56.1, 60.2, 70.7, 84.3, 94.1, 101.8, 113.6)
+p = c(5,10,15,25,50, 75,85, 90,95)/100
+
+
+#LAB EXERCISE:
+#Prior elicitation for a Normally distributed variable: US female population weight
+
+
+
+findNormPars = function(par,
+             q50, # 50th percentile
+             q75  # 75th percentile
+             ){
+  #res = pnorm(q1,par[1],par[2]) + pnorm(q2,par[1],par[2]) - p1 - p2
+  mu = par[1]
+  sigma = par[2]
+  res = sum((pnorm(c(q50,q75),mu,sigma) - c(1/2,3/4))^2)
+  return(res)
+}
+w.prior.sol = optim(c(50,10), findNormPars,q50= 70.7, q75 = 84.3)
+mu = w.prior.sol$par[1]
+sd = w.prior.sol$par[2]
+x = seq(mu-3*sd,mu+3*sd,by=1)
+fx = dnorm(x, mu, sd)
+plot(x, fx, type="l")
+
+#how good of a match is this anyways?
+fw = dnorm(w,mu,sd)
+points(w, fw,col=1:length(w),pch="x")
+abline(v=qnorm(p,mu,sd),col=1:length(w))
+```
+
+### Effect of prior on posterior
+
+```{r prior effect on Normal posterior}
+known.sd=1
+true.mean = 0
+
+#prior same variance as data, but wrong mean (3)
+prior.mean = 10
+prior.sd = .10
+sim.conjNormKnownVar(prior.mean = prior.mean, 
+                     prior.sd=prior.sd, 
+                     true.mean=true.mean, 
+                     known.sd=known.sd, 
+                     n.samples =100, 
+                     numIterationsToSkip = 49,
+                     interactive=TRUE)
+
+#LAB EXERCISE:
+#Explore more and less flat priors, more and less correct prior locations.  What are the implications on the posterior? What is a reasonable number of posterior samples?
+#Explore beta-binomial posterior model
+
+
+#prior very uncertain
+prior.mean = 10
+prior.sd = 10
+sim.conjNormKnownVar(prior.mean = prior.mean, 
+                     prior.sd=prior.sd, 
+                     true.mean=true.mean, 
+                     known.sd=known.sd, 
+                     n.samples =100, 
+                     numIterationsToSkip = 49,
+                     interactive=FALSE)
+
+#prior very certain, but wrong
+prior.mean = 10
+prior.sd = .10
+sim.conjNormKnownVar(prior.mean = prior.mean, 
+                     prior.sd=prior.sd, 
+                     true.mean=true.mean, 
+                     known.sd=known.sd, 
+                     n.samples =100, 
+                     numIterationsToSkip = 49,
+                     interactive=FALSE)
+
+                         
+```
+
+### Summarizing the posterior
+
+Take a simple model like
+`r {"
+x ~ N(mu, known.var)
+"}`
+
+`r {"
+mu ~ N(prior.mean,prior.var)
+"}`
+
+`r {"
+mu |x ~ N(post.mean,post.var)
+"}`
+
+```{r summarize Normal posterior}
+
+# x|mu ~ N(mu, know.var)
+# mu ~ N(prior.mean, prior.var)
+# mu |x ~ N(post.mean,post.var)
+
+sum.x = 10
+n.samples = 100
+
+prior.mean = 0
+prior.sd = 1
+known.sd = 1
+
+#POSTERIOR MEAN AND VARIANCE
+##analytical
+post.mean = ( prior.mean/prior.sd^2 + sum.x/known.sd^2) / (1/prior.sd^2 + n.samples/known.sd^2)
+post.var = 1/(1/prior.sd^2 + n.samples/known.sd^2)
+post.sd = sqrt(post.var)
+paste(c("mean:", "var:"), sapply(c(post.mean, post.var), round, d=3))
+
+##simulation
+post.samples = rnorm(n.samples, post.mean, post.sd)
+paste(c("mean:", "var:"), sapply(c(mean(post.samples), var(post.samples)), round, d=3))
+
+
+#POSTERIOR PROB THAT MU LIES IN A GIVEN INTERVAL: P(a < mu < b | x)
+a=0
+b=1
+##analytical
+pnorm(b, post.mean, post.sd) - pnorm(a, post.mean, post.sd)
+
+##simulation
+mean(post.samples > a & post.samples < b)
+
+#CENTRAL 95% CI
+##analytical
+c(qnorm(.025, post.mean, post.sd), qnorm(.975,post.mean, post.sd))
+##simulation
+quantile(post.samples, c(.025,.975))
+```
+
+
+
+
+### Bayesian hypothesis testing
+
+```{r Bayes factor: US pop weight example}
+#Based on previously published data  "Anthropometric Reference Data for Children and Adults: United States, 2003–2006" (http://www.cdc.gov/nchs/data/nhsr/nhsr010.pdf), we think the over-20 US female population weight follows a Gaussian distribution with mean and standard deviation: 
+mu.w = w.prior.sol$par[1]
+sd.w = w.prior.sol$par[2]
+sapply(c(mu.w, sd.w), round, d=2)
+
+#Suppose we go downtown SF and take the following sample:
+xbar = 72
+n = 55
+
+#Now we want to test the hypothesis that the mean is indeed mu.w
+#H0: mean = mu.w
+#H1: mean != mu.w
+
+#H0:  x|mu.w ~ N(mu.w, sd.w^2) =>
+#     xbar|mu.w ~ N(mu.w, sd.w^2/n)
+#p(xbar|mu.w) = dnorm(xbar, mean = mu.w, sd = sd.w/sqrt(n))
+L0=dnorm(xbar, mean = mu.w, sd = sd.w/sqrt(n))
+
+#H1:  x|mu.w ~ N(mu.w, xvar), 
+#     mu.w ~ N(mu0, var.mu) => 
+#     xbar|mu.w ~ N(mu.w, var.xbar), var.xbar = var.mu + var.x/n
+# Low information, flat-ish prior: var.mu = 2*var.w
+var.w = sd.w^2
+var.mu = var.w*2
+var.xbar = var.mu + var.w/n
+mu0 = mu.w
+L1=dnorm(xbar, mu0, sqrt(var.xbar))
+
+L0/L1
+
+BF = function(mu.w, 
+              sd.w, 
+              prior.var.multiplier,
+              xbar,
+              n){
+  
+  L0=dnorm(xbar, mean = mu.w, sd = sd.w/sqrt(n))
+  
+  var.w = sd.w^2
+  var.mu = var.w*prior.var.multiplier
+  var.xbar = var.mu + var.w/n
+  L1=dnorm(xbar, mu.w, sqrt(var.xbar))
+  
+  return(L0/L1)
+}
+
+#LAB EXERCISE:
+# Explore effect of prior flatness on BF
+a=seq(1,10,by=.1)
+bf =sapply(a, BF, mu.w=mu.w, sd.w = sd.w, xbar = xbar, n=n)
+plot(bf~a,type="l")
+abline(lm(bf~a)$coefficients,lty=2)
+
+#Explore effect of sample size on BF
+n=seq(10,200,by=5)
+bf =sapply(n, BF, mu.w=mu.w, sd.w = sd.w, xbar = xbar, prior.var.multiplier=2)
+plot(bf~n,type="l")
+abline(lm(bf~n)$coefficients,lty=2)
+
+```
+
+#### An important detour: p-values and frequentist hypothesis testing
+What evidence against the null hypothesis does a p-value of 0.05 provide?  
+In other words, p(H =0 | p-value = 0.05) = ?
+Address this question via simulation, as follows:
+
+- H ~ Bern(pi)
+- If H ==0, then sample y.bar ~ N(0, 1/n)
+- Else if H ==1, then sample mu ~ N(0,1), and y.bar ~ N(mu, 1/n)
+- Compute p-value, aka, 1 - 2*pnorm(z, mu, 1)
+- Repeat the above steps many times
+- Now compute p(H ==0| p-value )
+
+```{r frequentist hypothesis testing}
+pval.simulation = function(n, pi, mu0, sigma2, num.trials){
+  H = rbinom(num.trials, 1, pi)
+  mu = rnorm(length(H), mean = mu0, sd = H*sigma2)
+  pvalue = 2 *(1 - pnorm(abs(( rnorm(length(H), mean = mu, sd = 1/sqrt(n)) - mu)/(1/sqrt(n)))))
+  prob.H0.given.pvalue =  sum(pvalue[H == 0] >= 0.049 & pvalue[H == 0] <= 0.05)/sum(pvalue >= 0.049 & pvalue <= 0.05)
+  prob.H0.given.pvalue
+  }
+
+n = 30
+pi = 0.5
+num.trials = 100000
+mu0 = 0
+
+
+sigma2 = c(1,2,5,10,15,20,25,50,100)
+pi = seq(0,1,by=.1)
+probH0 = sapply(pi, function(x){sapply(sigma2, pval.simulation, n = n, mu0 = mu0, num.trials = num.trials, pi = x)})
+probH0 = cbind(probH0, sigma2)
+
+plot(NA, xlim = range(pi), ylim = range(probH0[,-ncol(probH0)]), xlab = expression(pi), ylab = expression(paste("P(", H[0], "|pval = 0.05)")))
+apply(probH0, 1, function(y){lines(y = y[1:(length(y)-1)],x = pi,col=y[length(y)],type="b")})
+legend("topright", legend=sigma2, col = 1:length(sigma2),lty=1,title = expression(sigma^2))
+
+##LAB EXERCISE:
+# Explore effect relationship between p-value and p(H0|Data) for various values of pi, num.trials, n
+
+```
+
+
