@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+   <key>Label</key>
+   <string>Matlab license file variable</string>
+   <key>ProgramArguments</key>
+   <array>
+     <string>/bin/launchctl</string>
+     <string>setenv</string>
+     <string>MLM_LICENSE_FILE</string>
+     <string>27006@eng-tools3.llnl.gov,27006@eng-tools4.llnl.gov,27006@eng-tools5.llnl.gov&</string>
+   </array>
+   <key>RunAtLoad</key>
+   <true/>
+ </dict>
+ </plist>
